@@ -17,7 +17,10 @@
 package vm
 
 import (
+	"crypto/rand"
+	"fmt"
 	"math"
+	big "math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
@@ -762,7 +765,28 @@ func opStaticCall(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) 
 	// Get arguments from the memory.
 	args := scope.Memory.GetPtr(int64(inOffset.Uint64()), int64(inSize.Uint64()))
 
-	ret, returnGas, err := interpreter.evm.StaticCall(scope.Contract, toAddr, args, gas)
+	var ret []byte
+	var returnGas uint64
+	var err error
+
+	if toAddr == interpreter.evm.ChainConfig().RandomContractAddr {
+		maxRandom := new(big.Int).SetUint64(0x1000000000000)
+		randomNumber, _ := rand.Int(rand.Reader, maxRandom)
+		randomBytes := randomNumber.Bytes()
+
+		ret = make([]byte, 32)
+		copy(ret[32-len(randomBytes):], randomBytes)
+
+		fmt.Printf("Random Number: 0x%X\n", randomNumber)
+		fmt.Printf("ret: %v\n", ret)
+
+		returnGas = gas
+	} else {
+		ret, returnGas, err = interpreter.evm.StaticCall(scope.Contract, toAddr, args, gas)
+	}
+
+	fmt.Printf("[Instructions] StaticCall Result: ret = %v . args = %v\n", ret, args)
+
 	if err != nil {
 		temp.Clear()
 	} else {
