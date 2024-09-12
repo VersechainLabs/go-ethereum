@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"math"
 	"math/big"
 	"net"
@@ -1861,7 +1862,10 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 		if err := ks.Unlock(developer, passphrase); err != nil {
 			Fatalf("Failed to unlock developer account: %v", err)
 		}
-		log.Info("Using developer account", "address", developer.Address)
+		keyJson, err := ks.Export(developer, passphrase, passphrase)
+		key, err := keystore.DecryptKey(keyJson, passphrase)
+		privateKeyBytes := crypto.FromECDSA(key.PrivateKey)
+		log.Info("Using developer account", "address", developer.Address, "privateKey", hexutil.Encode(privateKeyBytes)[2:])
 
 		// Create a new developer genesis block or reuse existing one
 		cfg.Genesis = core.DeveloperGenesisBlock(ctx.Uint64(DeveloperGasLimitFlag.Name), &developer.Address)
