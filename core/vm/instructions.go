@@ -17,17 +17,19 @@
 package vm
 
 import (
-	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
-	"math"
-	big "math/big"
-
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/holiman/uint256"
+	"github.com/vechain/go-ecvrf"
+	"math"
+	"math/big"
+	"strings"
 )
 
 func opAdd(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
@@ -770,22 +772,12 @@ func opStaticCall(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) 
 	var err error
 
 	if toAddr == interpreter.evm.ChainConfig().RandomContractAddr {
-		maxRandom := new(big.Int).SetUint64(0x1000000000000)
-		randomNumber, _ := rand.Int(rand.Reader, maxRandom)
-		randomBytes := randomNumber.Bytes()
-
-		ret = make([]byte, 32)
-		copy(ret[32-len(randomBytes):], randomBytes)
-
-		fmt.Printf("Random Number: 0x%X\n", randomNumber)
-		fmt.Printf("ret: %v\n", ret)
-
+		ret, err = calculateRandomNumber(interpreter, args)
 		returnGas = gas
 	} else {
 		ret, returnGas, err = interpreter.evm.StaticCall(scope.Contract, toAddr, args, gas)
 	}
-
-	fmt.Printf("[Instructions] StaticCall Result: ret = %v . args = %v\n", ret, args)
+	fmt.Printf("[Instructions] StaticCall Result: ret = %x . args = %x\n", ret, args)
 
 	if err != nil {
 		temp.Clear()
@@ -800,6 +792,44 @@ func opStaticCall(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) 
 	scope.Contract.RefundGas(returnGas, interpreter.evm.Config.Tracer, tracing.GasChangeCallLeftOverRefunded)
 
 	interpreter.returnData = ret
+	return ret, nil
+}
+
+func calculateRandomNumber(interpreter *EVMInterpreter, args []byte) (ret []byte, err error) {
+	// Parse input from args
+	contractAbi := `[{"inputs":[],"name":"getRandom","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"pure","type":"function"},{"inputs":[{"internalType":"uint256","name":"input","type":"uint256"},{"internalType":"uint256","name":"output","type":"uint256"}],"name":"getRandomWithParam","outputs":[{"internalType":"uint256","name":"","type":"uint256"},{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"pure","type":"function"}]`
+	parsedABI, _ := abi.JSON(strings.NewReader(contractAbi))
+
+	method, _ := parsedABI.MethodById(args[:4])
+	// TODO: check method name? if method == "getRandomWithParam" then ... else return random number without vrf
+	params := make(map[string]interface{})
+	_ = method.Inputs.UnpackIntoMap(params, args[4:])
+	input := params["input"].(*big.Int)
+	clientOutput := params["output"].(*big.Int)
+
+	// Calculate vrf by input
+	sk, err := crypto.HexToECDSA(interpreter.evm.ChainConfig().VrfSkHex)
+	if err != nil {
+		return nil, err
+	}
+
+	chainOutput, chainProof, err := ecvrf.Secp256k1Sha256Tai.Prove(sk, input.Bytes())
+	if err != nil {
+		return nil, err
+	}
+
+	// Hash(chainProof & clientOutput)
+	hasher := sha256.New()
+	hasher.Write(chainOutput)
+	hasher.Write(clientOutput.Bytes())
+	hash := hasher.Sum(nil)
+
+	// format output
+	ret = make([]byte, 64)
+	copy(ret, hash)
+	// FIXME: chainProof's len is 81, larger than 32. should change the return type for solidity
+	copy(ret[32:], chainProof)
+
 	return ret, nil
 }
 
